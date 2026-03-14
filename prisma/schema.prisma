@@ -54,6 +54,7 @@ model ProductSeoData {
   generatedMeta   String?  // JSON: { metaTitle, metaDescription }
   generatedSchema String?  // JSON-LD string
   applied         Boolean  @default(false)
+  schemaApplied   Boolean  @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
