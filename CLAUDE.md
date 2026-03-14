@@ -42,7 +42,9 @@ The `@shopify/polaris-types` definitions (v1.0.1) are incomplete — known misma
 | `app.meta-generator.tsx` | `/app/meta-generator` | Done (Phase 2) — full product list, generate & apply |
 | `app.schema-markup.tsx` | `/app/schema-markup` | Done (Phase 3) — JSON-LD generation, preview, apply as metafield |
 | `app.settings.tsx` | `/app/settings` | Placeholder |
-| `app.tsx` | layout | NavMenu with all 4 links |
+| `app.blog-generator.tsx` | `/app/blog-generator` | Done (Phase 4) — AI blog content generation, preview, publish to Shopify |
+| `app.settings.tsx` | `/app/settings` | Done (Phase 4) — API key management, model selection, theme integration docs |
+| `app.tsx` | layout | NavMenu with all 5 links |
 
 ## Meta Generator (Phase 2) — what's built
 - **Loader:** fetches first 50 products via GraphQL, loads existing `ProductSeoData` from Prisma
@@ -58,6 +60,20 @@ The `@shopify/polaris-types` definitions (v1.0.1) are incomplete — known misma
 - **UI:** checkbox table with per-row Generate / Preview / Apply buttons + bulk controls; inline JSON-LD preview panel with Google Rich Results link, char count, and rich snippet mockup
 - **Prisma:** added `schemaApplied Boolean @default(false)` to `ProductSeoData` — run `npx prisma db push` after pulling this change
 - **Theme integration note:** after applying, merchants add `{{ product.metafields.metaforge_seo.json_ld.value }}` inside a `<script type="application/ld+json">` tag in their `main-product.liquid`
+
+## Blog Generator (Phase 4) — what's built
+- **New npm dep:** `@anthropic-ai/sdk`
+- **New Prisma models:** `AppSettings` (shop, aiApiKey encrypted, aiModel), `GeneratedContent` (shop, contentType, title, metaDesc, body markdown, productIds, published, articleId)
+- **Utilities:** `app/utils/encryption.server.ts` — AES-256-GCM encrypt/decrypt (requires `ENCRYPTION_KEY` in `.env`); `app/utils/ai-content.server.ts` — prompt builders, Claude API call, response parser
+- **Settings page** (`app.settings.tsx`): API key input (password field, never returned to client), model dropdown (Haiku/Sonnet/Opus), save + test connection, encryption key setup instructions, theme integration Liquid snippet
+- **Blog generator page** (`app.blog-generator.tsx`):
+  - Loader: fetches 50 products + checks if API key is set + loads recent generations
+  - Generate action: decrypts key → calls Claude → parses title/META/body from response
+  - Publish action: fetches first blog → `articleCreate` mutation (draft, with title_tag + description_tag metafields) → saves to `GeneratedContent`
+  - UI: searchable product list (max 5 selected), content type radio (buying guide/spotlight/comparison), tone + word count dropdowns, target keyword; preview panel with Edit toggle; publish button
+  - Markdown→HTML conversion: custom line-by-line state machine (no library), supports H1-H3, bold/italic, code, lists
+- **Nav:** added Blog Generator link between Schema Markup and Settings
+- **Required env var:** `ENCRYPTION_KEY` — generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` and add to `.env`
 
 ## Dev setup
 **First time:**

@@ -60,3 +60,26 @@ model ProductSeoData {
 
   @@unique([shop, productId])
 }
+
+model AppSettings {
+  id        String   @id @default(cuid())
+  shop      String   @unique
+  aiApiKey  String?  // encrypted Anthropic API key
+  aiModel   String   @default("claude-sonnet-4-6")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GeneratedContent {
+  id          String   @id @default(cuid())
+  shop        String
+  contentType String   // "buying_guide", "product_spotlight", "comparison"
+  title       String
+  metaDesc    String?
+  body        String   // Markdown
+  productIds  String   // JSON array of product GIDs
+  published   Boolean  @default(false)
+  articleId   String?  // Shopify article GID if published
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
