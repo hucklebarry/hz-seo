@@ -32,3 +32,30 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model SeoJob {
+  id          String   @id @default(cuid())
+  shop        String
+  status      String   @default("pending") // pending, processing, completed, failed
+  jobType     String   // "meta_generation", "schema_generation", "blog_generation"
+  totalItems  Int      @default(0)
+  processed   Int      @default(0)
+  errors      String?  // JSON string of errors
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ProductSeoData {
+  id              String   @id @default(cuid())
+  shop            String
+  productId       String   // Shopify GID e.g. "gid://shopify/Product/123"
+  originalTitle   String?
+  originalDesc    String?
+  generatedMeta   String?  // JSON: { metaTitle, metaDescription }
+  generatedSchema String?  // JSON-LD string
+  applied         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([shop, productId])
+}
