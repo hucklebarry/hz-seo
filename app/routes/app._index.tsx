@@ -43,6 +43,20 @@ interface BulkError {
   message: string;
 }
 
+interface SeoViolation {
+  productId: string;
+  title: string;
+  type:
+    | "missing_title"
+    | "missing_description"
+    | "title_too_long"
+    | "description_too_long"
+    | "duplicate_title"
+    | "duplicate_description"
+    | "missing_schema";
+  message: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Generation helpers (inlined from meta-generator & schema-markup routes)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,6 +233,84 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const missingMeta = products.filter((p) => !p.seo.title || !p.seo.description);
   const missingSchema = products.filter((p) => !seoMap[p.id]?.schemaApplied);
 
+  // ── Quality checks ──
+  const violations: SeoViolation[] = [];
+
+  const titleCounts = new Map<string, number>();
+  const descCounts = new Map<string, number>();
+
+  for (const p of products) {
+    const title = p.seo.title?.trim() ?? "";
+    const desc = p.seo.description?.trim() ?? "";
+    if (title) titleCounts.set(title.toLowerCase(), (titleCounts.get(title.toLowerCase()) ?? 0) + 1);
+    if (desc) descCounts.set(desc.toLowerCase(), (descCounts.get(desc.toLowerCase()) ?? 0) + 1);
+  }
+
+  for (const p of products) {
+    const title = p.seo.title?.trim() ?? "";
+    const desc = p.seo.description?.trim() ?? "";
+
+    if (!title) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "missing_title",
+        message: "Missing meta title",
+      });
+    } else if (title.length > 60) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "title_too_long",
+        message: `Meta title too long (${title.length}/60)`,
+      });
+    } else if ((titleCounts.get(title.toLowerCase()) ?? 0) > 1) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "duplicate_title",
+        message: "Duplicate meta title",
+      });
+    }
+
+    if (!desc) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "missing_description",
+        message: "Missing meta description",
+      });
+    } else if (desc.length > 155) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "description_too_long",
+        message: `Meta description too long (${desc.length}/155)`,
+      });
+    } else if ((descCounts.get(desc.toLowerCase()) ?? 0) > 1) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "duplicate_description",
+        message: "Duplicate meta description",
+      });
+    }
+
+    if (!seoMap[p.id]?.schemaApplied) {
+      violations.push({
+        productId: p.id,
+        title: p.title,
+        type: "missing_schema",
+        message: "Schema not applied",
+      });
+    }
+  }
+
+  const violationSummary = violations.reduce<Record<string, number>>((acc, v) => {
+    acc[v.type] = (acc[v.type] ?? 0) + 1;
+    return acc;
+  }, {});
+
   return {
     products,
     shop,
@@ -231,6 +323,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     healthScore,
     missingMeta,
     missingSchema,
+    violations,
+    violationSummary,
   };
 };
 
@@ -622,6 +716,8 @@ export default function Dashboard() {
     healthScore,
     missingMeta,
     missingSchema,
+    violations,
+    violationSummary,
   } = useLoaderData<typeof loader>();
 
   const fetcher = useFetcher<typeof action>();
@@ -1061,6 +1157,109 @@ export default function Dashboard() {
         )}
       </s-section>
 
+      {/* ── Quality Checks ── */}
+      <s-section heading="Quality Checks">
+        {violations.length === 0 ? (
+          <div
+            style={{
+              padding: "24px 16px",
+              textAlign: "center",
+              color: "#8c9196",
+              background: "#f6f6f7",
+              borderRadius: 8,
+              fontSize: 14,
+            }}
+          >
+            No issues found in the first 50 products.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "#fff3cd",
+                color: "#856404",
+                borderRadius: 8,
+                fontSize: 13,
+              }}
+            >
+              {violations.length} total issue{violations.length !== 1 ? "s" : ""} across the first 50 products.
+              {Object.keys(violationSummary).length > 0 && (
+                <span>
+                  {" "}Top issues:{" "}
+                  {Object.entries(violationSummary)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 3)
+                    .map(([k, v]) => `${k.replace(/_/g, " ")} (${v})`)
+                    .join(", ")}
+                </span>
+              )}
+            </div>
+
+            <div style={{ border: "1px solid #e1e3e5", borderRadius: 8, overflow: "hidden" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 220px 140px 120px",
+                  gap: 12,
+                  padding: "10px 16px",
+                  background: "#f6f6f7",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  color: "#3d4044",
+                  borderBottom: "1px solid #e1e3e5",
+                }}
+              >
+                <span>Product</span>
+                <span>Issue</span>
+                <span>Type</span>
+                <span>Action</span>
+              </div>
+
+              {violations.slice(0, 20).map((v, idx) => (
+                <div
+                  key={`${v.productId}-${v.type}-${idx}`}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 220px 140px 120px",
+                    gap: 12,
+                    padding: "10px 16px",
+                    borderBottom: idx < Math.min(violations.length, 20) - 1 ? "1px solid #e1e3e5" : "none",
+                    alignItems: "center",
+                    background: "white",
+                  }}
+                >
+                  <span style={{ fontSize: 13, color: "#3d4044" }}>{v.title}</span>
+                  <span style={{ fontSize: 13, color: "#6d7175" }}>{v.message}</span>
+                  <span style={{ fontSize: 12, color: "#8c9196" }}>{v.type.replace(/_/g, " ")}</span>
+                  <a
+                    href={
+                      v.type === "missing_schema"
+                        ? "/app/schema-markup"
+                        : "/app/meta-generator"
+                    }
+                    style={{
+                      fontSize: 12,
+                      color: "#2c6ecb",
+                      textDecoration: "underline",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Fix →
+                  </a>
+                </div>
+              ))}
+            </div>
+
+            {violations.length > 20 && (
+              <div style={{ fontSize: 12, color: "#6d7175" }}>
+                Showing 20 of {violations.length} issues. Resolve the top items first.
+              </div>
+            )}
+          </div>
+        )}
+      </s-section>
+
       {/* ── Aside: Quick Actions ── */}
       <s-section slot="aside" heading="Quick Actions">
         <s-stack direction="block" gap="base">
@@ -1069,6 +1268,9 @@ export default function Dashboard() {
           </s-button>
           <s-button href="/app/schema-markup">
             Schema Markup
+          </s-button>
+          <s-button href="/app/approval-queue">
+            Approval Queue
           </s-button>
           <s-button href="/app/blog-generator">
             Blog Generator

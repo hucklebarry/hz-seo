@@ -26,6 +26,8 @@ Key principles:
 - `ProductSeoData`: Per-product SEO state (generated meta, JSON-LD, applied flags)
 - `AppSettings`: Per-shop settings (encrypted API key, model, templates)
 - `GeneratedContent`: AI-generated blog posts (title/meta/body, published state)
+- `AutomationRule`: Per-shop automation rule flags
+- `SeoChangeQueue`: Pending/applied SEO changes for review
 
 ## Feature Flows
 
@@ -100,6 +102,16 @@ Route: `app/routes/app._index.tsx`
 - Calculates SEO health score (meta titles, descriptions, schema coverage).
 - Bulk generate/apply meta tags or schema in batches of 10.
 - Tracks job progress in `SeoJob` with errors JSON.
+- Runs lightweight, in-memory SEO quality checks (duplicates, missing, over-length, schema coverage) for the first 50 products.
+
+### 5) Automation + Approval Queue
+Routes:
+- `app/routes/app.approval-queue.tsx` — review/apply/skip pending changes
+- `app/routes/webhooks.products.create.tsx` — enqueue changes on product create
+- `app/routes/app.settings.tsx` — automation settings + manual “Run Now”
+
+Notes:
+- Webhook enqueues changes; auto-apply is only performed in “Run Now” (admin context).
 
 ## Webhooks
 - `app/uninstalled`: Deletes sessions on uninstall.
@@ -110,10 +122,12 @@ Configured in `shopify.app.toml` with API version `2026-04`.
 ## External APIs
 - Shopify Admin GraphQL (products, productUpdate, blogs, articleCreate)
 - Anthropic Claude API (meta + blog generation)
+- Google Search Console API (OAuth + search analytics metrics)
 
 ## Configuration
 - `ENCRYPTION_KEY` is required for AI key storage (AES-256-GCM).
 - `SHOP_CUSTOM_DOMAIN` optionally allows non-`myshopify.com` shops.
+- Google Search Console OAuth requires `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI`.
 
 ## Known Constraints
 - Only the first 50 products are loaded in UI routes.

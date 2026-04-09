@@ -22,6 +22,7 @@ export default function App() {
         <s-link href="/app/meta-generator">Meta Generator</s-link>
         <s-link href="/app/schema-markup">Schema Markup</s-link>
         <s-link href="/app/blog-generator">Blog Generator</s-link>
+        <s-link href="/app/approval-queue">Approval Queue</s-link>
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />

@@ -86,3 +86,49 @@ model GeneratedContent {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+model GscAccount {
+  id           String   @id @default(cuid())
+  shop         String   @unique
+  accessToken  String
+  refreshToken String?
+  scope        String?
+  tokenType    String?
+  expiresAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model GscOauthState {
+  id        String   @id @default(cuid())
+  shop      String
+  state     String   @unique
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+}
+
+model AutomationRule {
+  id        String   @id @default(cuid())
+  shop      String
+  ruleType  String   // "product_create_meta", "product_create_schema", "weekly_meta", "weekly_schema"
+  enabled   Boolean  @default(false)
+  autoApply Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, ruleType])
+}
+
+model SeoChangeQueue {
+  id           String   @id @default(cuid())
+  shop         String
+  productId    String
+  productTitle String
+  changeType   String   // "meta" | "schema"
+  payload      String   // JSON string
+  status       String   @default("pending") // pending, applied, skipped, failed
+  error        String?
+  appliedAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

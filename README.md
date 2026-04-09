@@ -73,6 +73,9 @@ Press `P` to open the app URL in your browser. Click **Install** in the Shopify 
 | `ENCRYPTION_KEY` | Yes | 64-char hex string — encrypts stored API keys |
 | `DATABASE_URL` | Production only | PostgreSQL URL (SQLite used in dev) |
 | `SHOP_CUSTOM_DOMAIN` | Optional | Allow custom shop domains (e.g. `example.com`) |
+| `GOOGLE_CLIENT_ID` | Optional (GSC) | Google OAuth client ID for Search Console |
+| `GOOGLE_CLIENT_SECRET` | Optional (GSC) | Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | Optional (GSC) | OAuth redirect URL (e.g. `https://<app-url>/app/gsc/callback`) |
 
 ## Theme Integration (for JSON-LD Schema)
 
@@ -186,4 +189,6 @@ Make sure `shopify app dev` is running and the tunnel URL matches your app's URL
 ## Developer Docs
 
 - Architecture & data flow: `docs/architecture.md`
+- Google Search Console setup: `docs/gsc-setup.md`
 - Feature roadmap: `docs/phase-roadmap.md`
+- Automation & approval queue: `docs/automation-and-queue.md`

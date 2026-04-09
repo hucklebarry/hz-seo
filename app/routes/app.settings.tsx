@@ -24,7 +24,19 @@ interface TemplateRule {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
+  const url = new URL(request.url);
+  const gscStatus = url.searchParams.get("gsc");
+  const gscMessage = url.searchParams.get("message");
+
   const settings = await prisma.appSettings.findUnique({
+    where: { shop: session.shop },
+  });
+
+  const automationRules = await prisma.automationRule.findMany({
+    where: { shop: session.shop },
+  });
+
+  const gscAccount = await prisma.gscAccount.findUnique({
     where: { shop: session.shop },
   });
 
@@ -39,6 +51,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     metaTitleTemplate: settings?.metaTitleTemplate ?? "",
     metaDescTemplate: settings?.metaDescTemplate ?? "",
     templateRules,
+    automation: {
+      productCreateMeta: automationRules.find((r) => r.ruleType === "product_create_meta")?.enabled ?? false,
+      productCreateSchema: automationRules.find((r) => r.ruleType === "product_create_schema")?.enabled ?? false,
+      weeklyMeta: automationRules.find((r) => r.ruleType === "weekly_meta")?.enabled ?? false,
+      weeklySchema: automationRules.find((r) => r.ruleType === "weekly_schema")?.enabled ?? false,
+      autoApply: automationRules.find((r) => r.ruleType === "product_create_meta")?.autoApply ?? false,
+    },
+    gscConnected: !!gscAccount,
+    gscConnectedAt: gscAccount?.updatedAt ?? null,
+    gscScope: gscAccount?.scope ?? null,
+    gscTokenType: gscAccount?.tokenType ?? null,
+    gscExpiresAt: gscAccount?.expiresAt ?? null,
+    gscStatus,
+    gscMessage,
   };
 };
 
@@ -131,6 +157,246 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { intent: "test", success: true };
     } catch (e) {
       return { intent: "test", error: `Connection failed: ${String(e)}` };
+    }
+  }
+
+  // ── Save automation rules ──
+  if (intent === "saveAutomation") {
+    const productCreateMeta = formData.get("productCreateMeta") === "on";
+    const productCreateSchema = formData.get("productCreateSchema") === "on";
+    const weeklyMeta = formData.get("weeklyMeta") === "on";
+    const weeklySchema = formData.get("weeklySchema") === "on";
+    const autoApply = formData.get("autoApply") === "on";
+
+    const rules = [
+      { ruleType: "product_create_meta", enabled: productCreateMeta },
+      { ruleType: "product_create_schema", enabled: productCreateSchema },
+      { ruleType: "weekly_meta", enabled: weeklyMeta },
+      { ruleType: "weekly_schema", enabled: weeklySchema },
+    ];
+
+    try {
+      for (const r of rules) {
+        await prisma.automationRule.upsert({
+          where: { shop_ruleType: { shop: session.shop, ruleType: r.ruleType } },
+          create: { shop: session.shop, ruleType: r.ruleType, enabled: r.enabled, autoApply },
+          update: { enabled: r.enabled, autoApply },
+        });
+      }
+      return { intent: "saveAutomation", success: true };
+    } catch (e) {
+      return { intent: "saveAutomation", error: String(e) };
+    }
+  }
+
+  // ── Run automation now (manual) ──
+  if (intent === "runAutomationNow") {
+    const { admin } = await authenticate.admin(request);
+    const autoApply = formData.get("autoApply") === "on";
+    const runMeta = formData.get("runMeta") === "on";
+    const runSchema = formData.get("runSchema") === "on";
+
+    const [productsResp, shopResp] = await Promise.all([
+      admin.graphql(`#graphql
+        {
+          products(first: 50) {
+            edges {
+              node {
+                id
+                title
+                description
+                productType
+                vendor
+                tags
+                handle
+                seo { title description }
+                featuredImage { url }
+                images(first: 10) { edges { node { url } } }
+                options { name values }
+                variants(first: 100) {
+                  edges { node { price sku barcode availableForSale } }
+                }
+              }
+            }
+          }
+        }
+      `),
+      admin.graphql(`#graphql { shop { name url currencyCode } }`),
+    ]);
+
+    const pJson = await productsResp.json();
+    const sJson = await shopResp.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const products = pJson.data?.products?.edges?.map((e: any) => e.node) ?? [];
+    const shopInfo = sJson.data?.shop ?? { name: session.shop, url: `https://${session.shop}`, currencyCode: "USD" };
+
+    const settings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+    const templateRules = settings?.templateRules
+      ? (() => { try { return JSON.parse(settings.templateRules); } catch { return []; } })()
+      : [];
+
+    const { generateMetaForProduct, generateJsonLd } = await import("../utils/seo-automation.server");
+
+    let queued = 0;
+    const PRODUCT_UPDATE_META = `#graphql
+      mutation productUpdate($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product { id }
+          userErrors { field message }
+        }
+      }`;
+    const PRODUCT_UPDATE_SCHEMA = `#graphql
+      mutation productUpdate($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product { id }
+          userErrors { field message }
+        }
+      }`;
+
+    for (const p of products) {
+      if (runMeta && (!p.seo?.title || !p.seo?.description)) {
+        const meta = generateMetaForProduct(
+          p,
+          shopInfo,
+          settings?.metaTitleTemplate ?? "{title} - {type} | {vendor}",
+          settings?.metaDescTemplate ?? "",
+          templateRules,
+        );
+        if (autoApply) {
+          const resp = await admin.graphql(PRODUCT_UPDATE_META, {
+            variables: { input: { id: p.id, seo: { title: meta.metaTitle, description: meta.metaDescription } } },
+          });
+          const json = await resp.json();
+          const userErrors = json.data?.productUpdate?.userErrors ?? [];
+          if (userErrors.length === 0) {
+            await prisma.productSeoData.upsert({
+              where: { shop_productId: { shop: session.shop, productId: p.id } },
+              create: {
+                shop: session.shop,
+                productId: p.id,
+                generatedMeta: JSON.stringify(meta),
+                applied: true,
+              },
+              update: {
+                generatedMeta: JSON.stringify(meta),
+                applied: true,
+              },
+            });
+            await prisma.seoChangeQueue.create({
+              data: {
+                shop: session.shop,
+                productId: p.id,
+                productTitle: p.title,
+                changeType: "meta",
+                payload: JSON.stringify(meta),
+                status: "applied",
+                appliedAt: new Date(),
+              },
+            });
+            queued++;
+          } else {
+            await prisma.seoChangeQueue.create({
+              data: {
+                shop: session.shop,
+                productId: p.id,
+                productTitle: p.title,
+                changeType: "meta",
+                payload: JSON.stringify(meta),
+                status: "failed",
+                error: userErrors.map((e: any) => e.message).join(", "),
+              },
+            });
+          }
+        } else {
+          await prisma.seoChangeQueue.create({
+            data: {
+              shop: session.shop,
+              productId: p.id,
+              productTitle: p.title,
+              changeType: "meta",
+              payload: JSON.stringify(meta),
+            },
+          });
+          queued++;
+        }
+      }
+      if (runSchema) {
+        const jsonLd = generateJsonLd(p, shopInfo);
+        if (autoApply) {
+          const resp = await admin.graphql(PRODUCT_UPDATE_SCHEMA, {
+            variables: {
+              input: {
+                id: p.id,
+                metafields: [{ namespace: "metaforge_seo", key: "json_ld", value: jsonLd, type: "json" }],
+              },
+            },
+          });
+          const json = await resp.json();
+          const userErrors = json.data?.productUpdate?.userErrors ?? [];
+          if (userErrors.length === 0) {
+            await prisma.productSeoData.upsert({
+              where: { shop_productId: { shop: session.shop, productId: p.id } },
+              create: {
+                shop: session.shop,
+                productId: p.id,
+                generatedSchema: jsonLd,
+                schemaApplied: true,
+              },
+              update: {
+                generatedSchema: jsonLd,
+                schemaApplied: true,
+              },
+            });
+            await prisma.seoChangeQueue.create({
+              data: {
+                shop: session.shop,
+                productId: p.id,
+                productTitle: p.title,
+                changeType: "schema",
+                payload: JSON.stringify({ jsonLd }),
+                status: "applied",
+                appliedAt: new Date(),
+              },
+            });
+            queued++;
+          } else {
+            await prisma.seoChangeQueue.create({
+              data: {
+                shop: session.shop,
+                productId: p.id,
+                productTitle: p.title,
+                changeType: "schema",
+                payload: JSON.stringify({ jsonLd }),
+                status: "failed",
+                error: userErrors.map((e: any) => e.message).join(", "),
+              },
+            });
+          }
+        } else {
+          await prisma.seoChangeQueue.create({
+            data: {
+              shop: session.shop,
+              productId: p.id,
+              productTitle: p.title,
+              changeType: "schema",
+              payload: JSON.stringify({ jsonLd }),
+            },
+          });
+          queued++;
+        }
+      }
+    }
+
+    return { intent: "runAutomationNow", queued };
+  }
+
+  // ── Disconnect GSC ──
+  if (intent === "gscDisconnect") {
+    try {
+      await prisma.gscAccount.delete({ where: { shop: session.shop } });
+      return { intent: "gscDisconnect", success: true };
+    } catch (e) {
+      return { intent: "gscDisconnect", error: String(e) };
     }
   }
 
@@ -321,9 +587,19 @@ export default function Settings() {
     metaTitleTemplate: savedTitleTemplate,
     metaDescTemplate: savedDescTemplate,
     templateRules: savedRules,
+    automation,
+    gscConnected,
+    gscConnectedAt,
+    gscScope,
+    gscTokenType,
+    gscExpiresAt,
+    gscStatus,
+    gscMessage,
   } = useLoaderData<typeof loader>();
 
   const fetcher = useFetcher<typeof action>();
+  const automationFetcher = useFetcher<typeof action>();
+  const runFetcher = useFetcher<typeof action>();
 
   const [apiKey, setApiKey] = useState("");
   const [aiModel, setAiModel] = useState(savedModel);
@@ -334,11 +610,20 @@ export default function Settings() {
 
   const isSaving = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "save";
   const isTesting = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "test";
+  const isDisconnecting =
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "gscDisconnect";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = fetcher.data as any;
   const saveResult = data?.intent === "save" ? data : null;
   const testResult = data?.intent === "test" ? data : null;
+  const gscResult = data?.intent === "gscDisconnect" ? data : null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const automationData = automationFetcher.data as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const runData = runFetcher.data as any;
+  const automationResult = automationData?.intent === "saveAutomation" ? automationData : null;
+  const runResult = runData?.intent === "runAutomationNow" ? runData : null;
 
   function handleSave() {
     const fd = new FormData();
@@ -355,6 +640,12 @@ export default function Settings() {
     const fd = new FormData();
     fd.set("intent", "test");
     fd.set("apiKey", apiKey);
+    fetcher.submit(fd, { method: "post" });
+  }
+
+  function handleGscDisconnect() {
+    const fd = new FormData();
+    fd.set("intent", "gscDisconnect");
     fetcher.submit(fd, { method: "post" });
   }
 
@@ -503,6 +794,232 @@ export default function Settings() {
             <p style={{ fontSize: 13, color: "#3d4044", margin: 0 }}>
               Then add to <code>.env</code>: <code style={{ userSelect: "all" }}>ENCRYPTION_KEY=your_64_char_hex_value</code>
             </p>
+          </div>
+
+        </s-stack>
+      </s-section>
+
+      {/* ── Automation ── */}
+      <s-section heading="Automation">
+        <s-stack direction="block" gap="base">
+          {automationResult && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background: automationResult.success ? "#d4edda" : "#f8d7da",
+                color: automationResult.success ? "#155724" : "#721c24",
+                borderRadius: 6,
+                fontSize: 14,
+              }}
+            >
+              {automationResult.success ? "✓ Automation settings saved." : `✗ ${automationResult.error}`}
+            </div>
+          )}
+          {runResult && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background: "#d4edda",
+                color: "#155724",
+                borderRadius: 6,
+                fontSize: 14,
+              }}
+            >
+              ✓ Queued {runResult.queued} change{runResult.queued !== 1 ? "s" : ""}.
+            </div>
+          )}
+
+          <div style={CARD_STYLE}>
+            <s-stack direction="block" gap="base">
+              <automationFetcher.Form method="post">
+                <input type="hidden" name="intent" value="saveAutomation" />
+                <s-stack direction="block" gap="base">
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" name="productCreateMeta" defaultChecked={automation.productCreateMeta} />
+                    <span>Auto-generate meta tags when a product is created</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" name="productCreateSchema" defaultChecked={automation.productCreateSchema} />
+                    <span>Auto-generate schema when a product is created</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" name="weeklyMeta" defaultChecked={automation.weeklyMeta} />
+                    <span>Weekly run: generate missing meta tags</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" name="weeklySchema" defaultChecked={automation.weeklySchema} />
+                    <span>Weekly run: generate missing schema</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input type="checkbox" name="autoApply" defaultChecked={automation.autoApply} />
+                    <span>Auto-apply changes (skip approval queue)</span>
+                  </label>
+
+                  <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <s-button variant="primary" type="submit">
+                      Save Automation Settings
+                    </s-button>
+                    <a
+                      href="/app/approval-queue"
+                      style={{ fontSize: 12, color: "#2c6ecb", textDecoration: "underline" }}
+                    >
+                      View Approval Queue →
+                    </a>
+                  </div>
+                </s-stack>
+              </automationFetcher.Form>
+
+              <runFetcher.Form method="post">
+                <input type="hidden" name="intent" value="runAutomationNow" />
+                <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="checkbox" name="runMeta" defaultChecked />
+                    <span style={{ fontSize: 12 }}>Meta</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="checkbox" name="runSchema" defaultChecked />
+                    <span style={{ fontSize: 12 }}>Schema</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="checkbox" name="autoApply" defaultChecked={automation.autoApply} />
+                    <span style={{ fontSize: 12 }}>Auto-apply</span>
+                  </label>
+                  <s-button type="submit">Run Now</s-button>
+                </div>
+              </runFetcher.Form>
+            </s-stack>
+          </div>
+        </s-stack>
+      </s-section>
+
+      {/* ── Google Search Console ── */}
+      <s-section heading="Google Search Console">
+        <s-stack direction="block" gap="base">
+
+          {gscStatus === "connected" && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background: "#d4edda",
+                color: "#155724",
+                borderRadius: 6,
+                fontSize: 14,
+              }}
+            >
+              ✓ Google Search Console connected successfully.
+            </div>
+          )}
+
+          {gscStatus === "error" && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background: "#f8d7da",
+                color: "#721c24",
+                borderRadius: 6,
+                fontSize: 14,
+              }}
+            >
+              ✗ Google Search Console connection failed.
+              {gscMessage ? ` ${gscMessage}` : ""}
+            </div>
+          )}
+
+          {gscResult && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background: gscResult.success ? "#d4edda" : "#f8d7da",
+                color: gscResult.success ? "#155724" : "#721c24",
+                borderRadius: 6,
+                fontSize: 14,
+              }}
+            >
+              {gscResult.success
+                ? "✓ Google Search Console disconnected."
+                : `✗ ${gscResult.error}`}
+            </div>
+          )}
+
+          <div style={CARD_STYLE}>
+            <s-stack direction="block" gap="base">
+              <p style={{ fontSize: 13, color: "#3d4044", margin: 0 }}>
+                Connect Google Search Console to measure impressions, clicks, and CTR
+                for your product pages.
+              </p>
+
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                {gscConnected ? (
+                  <>
+                    <span style={{ fontSize: 13, color: "#3d4044" }}>
+                      Status: <strong>Connected</strong>
+                    </span>
+                    {gscConnectedAt && (
+                      <span style={{ fontSize: 12, color: "#6d7175" }}>
+                        Last updated: {new Date(gscConnectedAt).toLocaleString()}
+                      </span>
+                    )}
+                    {gscScope && (
+                      <span style={{ fontSize: 12, color: "#6d7175" }}>
+                        Scope: {gscScope}
+                      </span>
+                    )}
+                    {gscTokenType && (
+                      <span style={{ fontSize: 12, color: "#6d7175" }}>
+                        Token type: {gscTokenType}
+                      </span>
+                    )}
+                    {gscExpiresAt && (
+                      <span style={{ fontSize: 12, color: "#6d7175" }}>
+                        Expires: {new Date(gscExpiresAt).toLocaleString()}
+                      </span>
+                    )}
+                    <button
+                      onClick={handleGscDisconnect}
+                      style={{
+                        padding: "6px 12px",
+                        background: "#f6f6f7",
+                        color: "#3d4044",
+                        border: "1px solid #c9cccf",
+                        borderRadius: 4,
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                      disabled={isDisconnecting}
+                    >
+                      {isDisconnecting ? "Disconnecting…" : "Disconnect"}
+                    </button>
+                  </>
+                ) : (
+                  <a
+                    href="/app/gsc/connect"
+                    target="_top"
+                    rel="noreferrer"
+                    style={{
+                      padding: "8px 12px",
+                      background: "#005bd3",
+                      color: "white",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      textDecoration: "none",
+                    }}
+                  >
+                    Connect Google Search Console
+                  </a>
+                )}
+              </div>
+            </s-stack>
+          </div>
+
+          <div style={{ ...CARD_STYLE, background: "#f6f6f7", borderColor: "#c9cccf" }}>
+            <p style={{ fontSize: 13, fontWeight: 600, marginTop: 0, marginBottom: 6 }}>
+              Required environment variables
+            </p>
+            <div style={{ fontSize: 12, color: "#3d4044" }}>
+              <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code>,{" "}
+              <code>GOOGLE_REDIRECT_URI</code>
+            </div>
           </div>
 
         </s-stack>
