@@ -12,24 +12,23 @@
 
 ---
 
-## Phase 2: Meta Tag Generator (planned)
-- Product list UI with pagination
-- Bulk select products
-- Call AI (Claude API) to generate `metaTitle` + `metaDescription` per product
-- Preview generated tags before applying
-- Apply via `productUpdate` mutation (SEO metafields)
-- Store results in `ProductSeoData`
-- Track job progress in `SeoJob`
+## Phase 2: Meta Tag Generator ✅
+- Product list UI (first 50 products) with select-all and per-row status
+- Generate meta titles/descriptions from template; AI generation enabled when Anthropic API key is configured
+- Preview + inline edit generated tags before applying
+- Apply via `productUpdate` mutation (`seo { title, description }`)
+- Persist generated results in `ProductSeoData` with `applied` flag
 
-## Phase 3: Schema Markup / JSON-LD (planned)
-- Generate `Product` JSON-LD structured data
-- Inject via Shopify metafields or theme app extension
-- Support: Product, BreadcrumbList, Organization types
+## Phase 3: Schema Markup / JSON-LD ✅
+- Generate `Product` JSON-LD structured data (Offer/AggregateOffer based on variants)
+- Apply via Shopify metafield `metaforge_seo.json_ld` (type `json`)
+- Per-product preview with Google Rich Results Test link
+- Persist JSON-LD + `schemaApplied` in `ProductSeoData`
 
-## Phase 4: Blog / Content Generation (planned)
-- Generate SEO blog posts from product collections
-- Use Shopify's blog/article API (`read_content`, `write_content`)
-- Schedule and publish
+## Phase 4: Blog / Content Generation ✅
+- Generate SEO blog posts using Anthropic (Claude) with tone/word count/keyword options
+- Publish as draft articles via Shopify Blog API (`read_content`, `write_content`)
+- Store generated content in `GeneratedContent` with publish status
 
 ## Phase 5: Analytics & Reporting (planned)
 - Track which products have had SEO applied

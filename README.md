@@ -5,14 +5,14 @@ AI-powered SEO automation for Shopify stores. Auto-generates optimized meta titl
 ## What It Does
 
 - **Dashboard** — SEO health score, store stats, and bulk generation with real-time progress
-- **Meta Generator** — Generates and applies SEO meta titles (≤60 chars) and descriptions (≤155 chars) for products
+- **Meta Generator** — Generates and applies SEO meta titles (≤60 chars) and descriptions (≤155 chars) for products (AI when configured, template fallback)
 - **Schema Markup** — Builds and applies valid JSON-LD structured data (schema.org/Product) for Google rich snippets
 - **Blog Generator** — AI-powered blog posts (buying guides, product spotlights, comparisons) via Claude API
 - **Settings** — Encrypted Anthropic API key management and theme integration docs
 
 ## Prerequisites
 
-- Node.js 18+ (LTS recommended)
+- Node.js 20.19+ (or 22.12+) — per `package.json` engines
 - A [Shopify Partner account](https://partners.shopify.com) (free)
 - A development store (create one from your Partner dashboard → Stores)
 - An Anthropic API key — only needed for Blog Generator; Meta/Schema features work without it
@@ -72,6 +72,7 @@ Press `P` to open the app URL in your browser. Click **Install** in the Shopify 
 | `SCOPES` | Yes (auto) | `read_products,write_products,read_content,write_content` |
 | `ENCRYPTION_KEY` | Yes | 64-char hex string — encrypts stored API keys |
 | `DATABASE_URL` | Production only | PostgreSQL URL (SQLite used in dev) |
+| `SHOP_CUSTOM_DOMAIN` | Optional | Allow custom shop domains (e.g. `example.com`) |
 
 ## Theme Integration (for JSON-LD Schema)
 
@@ -157,10 +158,12 @@ prisma/
 
 - All app routes are prefixed `app.` (e.g. `app.meta-generator.tsx`) to inherit auth from `app/routes/app.tsx`
 - Every loader/action calls `await authenticate.admin(request)` — handles OAuth redirect automatically
-- Shopify API version: `2026-01`
+- Shopify Admin API version: `ApiVersion.October25` (2025-10)
+- Webhook API version lives in `shopify.app.toml` (currently `2026-04`) — keep these aligned when upgrading
 - Polaris web components are used (`<s-page>`, `<s-card>`, `<s-button>`, etc.) — not React Polaris
 - The `shopify app dev` command **must be run interactively** in a real terminal — it prompts for Partner org and dev store selection
 - Schema is applied as metafield `metaforge_seo.json_ld` (type: `json`) on each product
+- Dashboard bulk operations are template-based (AI generation only happens in the Meta Generator when a key is configured)
 
 ## Troubleshooting
 
@@ -179,3 +182,8 @@ Make sure `shopify app dev` is running and the tunnel URL matches your app's URL
 **Schema not showing in Google:**
 - Confirm the Liquid snippet is in your theme (see Theme Integration above)
 - Run the Rich Results Test — it takes a few days for Google to re-crawl
+
+## Developer Docs
+
+- Architecture & data flow: `docs/architecture.md`
+- Feature roadmap: `docs/phase-roadmap.md`

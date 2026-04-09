@@ -28,6 +28,8 @@ interface SchemaProduct {
   vendor: string;
   handle: string;
   featuredImage: { url: string } | null;
+  images: { edges: { node: { url: string } }[] };
+  options: { name: string; values: string[] }[];
   variants: { edges: { node: ShopifyVariant }[] };
 }
 
@@ -74,9 +76,29 @@ function generateJsonLd(product: SchemaProduct, shop: ShopInfo): string {
   };
 
   if (desc) schema.description = desc;
-  if (product.featuredImage?.url) schema.image = product.featuredImage.url;
+
+  const allImageUrls = product.images.edges.map((e) => e.node.url).filter(Boolean);
+  if (allImageUrls.length === 1) {
+    schema.image = allImageUrls[0];
+  } else if (allImageUrls.length > 1) {
+    schema.image = allImageUrls;
+  } else if (product.featuredImage?.url) {
+    schema.image = product.featuredImage.url;
+  }
+
   if (firstVariant?.sku) schema.sku = firstVariant.sku;
   if (firstVariant?.barcode) schema.gtin = firstVariant.barcode;
+
+  const additionalProperties = product.options
+    .filter((opt) => opt.values.length > 0 && opt.name.toLowerCase() !== "title")
+    .map((opt) => ({
+      "@type": "PropertyValue",
+      name: opt.name,
+      value: opt.values.join(", "),
+    }));
+  if (additionalProperties.length > 0) {
+    schema.additionalProperty = additionalProperties;
+  }
 
   schema.brand = {
     "@type": "Brand",
@@ -131,6 +153,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               handle
               featuredImage {
                 url
+              }
+              images(first: 10) {
+                edges {
+                  node {
+                    url
+                  }
+                }
+              }
+              options {
+                name
+                values
               }
               variants(first: 100) {
                 edges {
@@ -400,7 +433,7 @@ function RichSnippetMockup({
       >
         {schema.name as string}
       </div>
-      {schema.description && (
+      {(schema.description as string | undefined) && (
         <div
           style={{
             fontSize: 14,

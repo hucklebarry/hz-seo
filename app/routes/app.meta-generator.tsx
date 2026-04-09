@@ -7,6 +7,8 @@ import { useLoaderData, useFetcher } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
+import { decrypt } from "../utils/encryption.server";
+import { generateProductMeta } from "../utils/ai-content.server";
 import { useState, useRef, useEffect } from "react";
 
 // ---------------------------------------------------------------------------
@@ -15,6 +17,7 @@ import { useState, useRef, useEffect } from "react";
 
 interface ShopifyProduct {
   id: string;
+  handle: string;
   title: string;
   description: string;
   productType: string;
@@ -22,7 +25,17 @@ interface ShopifyProduct {
   tags: string[];
   seo: { title: string | null; description: string | null };
   featuredImage: { url: string } | null;
-  variants: { edges: { node: { price: string } }[] };
+  variants: {
+    edges: {
+      node: {
+        price: string;
+        sku: string | null;
+        barcode: string | null;
+        availableForSale: boolean;
+        selectedOptions: { name: string; value: string }[];
+      };
+    }[];
+  };
 }
 
 interface GeneratedSeoItem {
@@ -32,44 +45,139 @@ interface GeneratedSeoItem {
   metaDescription: string;
 }
 
+interface TemplateRule {
+  productType: string;
+  titleTemplate: string;
+  descTemplate: string;
+}
+
 // ---------------------------------------------------------------------------
 // Generation helpers (deterministic / template-based)
 // ---------------------------------------------------------------------------
+
+const DEFAULT_META_TITLE_TEMPLATE = "{title} - {type} | {vendor}";
+const DEFAULT_META_DESC_TEMPLATE = ""; // empty = use fallback logic
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, "").trim();
 }
 
-function generateMetaTitle(product: ShopifyProduct): string {
-  const { title, productType, vendor } = product;
+/** Substitute all tokens in a template string. Returns raw (untruncated) result. */
+function applyTokens(
+  template: string,
+  product: ShopifyProduct,
+  shopName: string,
+): string {
+  const variants = product.variants.edges.map((e) => e.node);
+  const firstVariant = variants[0];
 
-  if (productType && vendor) {
-    const full = `${title} - ${productType} | ${vendor}`;
-    if (full.length <= 60) return full;
-    const suffix = ` - ${productType} | ${vendor}`;
-    const maxTitleLen = 60 - suffix.length - 3;
-    if (maxTitleLen > 0) return `${title.slice(0, maxTitleLen)}... | ${vendor}`;
-    return `${title.slice(0, 57)}...`;
-  }
+  const prices = variants
+    .map((v) => parseFloat(v.price))
+    .filter((p) => !isNaN(p) && p > 0);
+  const price = firstVariant?.price
+    ? `$${parseFloat(firstVariant.price).toFixed(2)}`
+    : "";
+  const priceMin = prices.length ? `$${Math.min(...prices).toFixed(2)}` : price;
+  const priceMax = prices.length ? `$${Math.max(...prices).toFixed(2)}` : price;
 
-  if (vendor) {
-    const full = `${title} | ${vendor}`;
-    if (full.length <= 60) return full;
-    const suffix = ` | ${vendor}`;
-    const maxTitleLen = 60 - suffix.length - 3;
-    if (maxTitleLen > 0) return `${title.slice(0, maxTitleLen)}... | ${vendor}`;
-    return `${title.slice(0, 57)}...`;
-  }
+  const sku = firstVariant?.sku || "";
+  const barcode = firstVariant?.barcode || "";
+  const option1 = firstVariant?.selectedOptions?.[0]?.value || "";
+  const option2 = firstVariant?.selectedOptions?.[1]?.value || "";
+  const option3 = firstVariant?.selectedOptions?.[2]?.value || "";
+  const availability = variants.some((v) => v.availableForSale)
+    ? "In Stock"
+    : "Out of Stock";
+  const firstTag = product.tags[0] || "";
+  const year = new Date().getFullYear().toString();
+  const strippedDesc = stripHtml(product.description);
+  const descriptionShort = strippedDesc.slice(0, 100).trim();
+  const variantCount = variants.length.toString();
 
-  const full = `${title} - Shop Now`;
-  if (full.length <= 60) return full;
-  return `${title.slice(0, 57)}...`;
+  let result = template
+    .replace(/{title}/g, product.title)
+    .replace(/{vendor}/g, product.vendor || "")
+    .replace(/{type}/g, product.productType || "")
+    .replace(/{store}/g, shopName)
+    .replace(/{price}/g, price)
+    .replace(/{price_min}/g, priceMin)
+    .replace(/{price_max}/g, priceMax)
+    .replace(/{sku}/g, sku)
+    .replace(/{barcode}/g, barcode)
+    .replace(/{option1}/g, option1)
+    .replace(/{option2}/g, option2)
+    .replace(/{option3}/g, option3)
+    .replace(/{availability}/g, availability)
+    .replace(/{first_tag}/g, firstTag)
+    .replace(/{year}/g, year)
+    .replace(/{description_short}/g, descriptionShort)
+    .replace(/{description}/g, strippedDesc)
+    .replace(/{variant_count}/g, variantCount);
+
+  // Clean up separators left by empty tokens e.g. " -  | Vendor" → " | Vendor"
+  result = result
+    .replace(/\s*[-|]\s*[-|]\s*/g, " | ")
+    .replace(/^\s*[-|]\s*/, "")
+    .replace(/\s*[-|]\s*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return result;
 }
 
-function generateMetaDescription(product: ShopifyProduct): string {
-  const { title, vendor, productType, description } = product;
-  const stripped = stripHtml(description);
+/** Select title/desc templates for a product, applying rule-based overrides. */
+function selectTemplates(
+  product: ShopifyProduct,
+  rules: TemplateRule[],
+  defaultTitle: string,
+  defaultDesc: string,
+): { titleTemplate: string; descTemplate: string } {
+  if (rules.length > 0 && product.productType) {
+    const rule = rules.find(
+      (r) =>
+        r.productType.trim().toLowerCase() ===
+        product.productType.trim().toLowerCase(),
+    );
+    if (rule) {
+      return {
+        titleTemplate: rule.titleTemplate || defaultTitle,
+        descTemplate: rule.descTemplate || defaultDesc,
+      };
+    }
+  }
+  return { titleTemplate: defaultTitle, descTemplate: defaultDesc };
+}
 
+function generateMetaTitle(
+  product: ShopifyProduct,
+  template: string,
+  shopName: string,
+): string {
+  const raw = applyTokens(template || DEFAULT_META_TITLE_TEMPLATE, product, shopName);
+  if (raw.length <= 60) return raw;
+  const truncated = raw.slice(0, 57);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > 10 ? truncated.slice(0, lastSpace) : truncated) + "...";
+}
+
+function generateMetaDescription(
+  product: ShopifyProduct,
+  template: string,
+  shopName: string,
+): string {
+  // If a template is set, use it
+  if (template) {
+    const raw = applyTokens(template, product, shopName);
+    if (raw) {
+      if (raw.length <= 155) return raw;
+      const truncated = raw.slice(0, 152);
+      const lastSpace = truncated.lastIndexOf(" ");
+      return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + "...";
+    }
+  }
+
+  // Fallback: use stripped description, then a generated sentence
+  const stripped = stripHtml(product.description);
   if (stripped) {
     if (stripped.length <= 155) return stripped;
     const truncated = stripped.slice(0, 152);
@@ -78,16 +186,14 @@ function generateMetaDescription(product: ShopifyProduct): string {
   }
 
   const parts = [
-    `Shop ${title}`,
-    vendor ? `by ${vendor}` : null,
-    productType ? `${productType}.` : null,
-    "Free shipping available. Browse our selection today.",
+    `Shop ${product.title}`,
+    product.vendor ? `by ${product.vendor}` : null,
+    product.productType ? `${product.productType}.` : null,
+    "Browse our full selection and find the right fit for your needs.",
   ]
     .filter(Boolean)
     .join(" ");
-
-  if (parts.length <= 155) return parts;
-  return parts.slice(0, 152) + "...";
+  return parts.length <= 155 ? parts : parts.slice(0, 152) + "...";
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +209,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         edges {
           node {
             id
+            handle
             title
             description
             productType
@@ -115,10 +222,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             featuredImage {
               url
             }
-            variants(first: 1) {
+            variants(first: 100) {
               edges {
                 node {
                   price
+                  sku
+                  barcode
+                  availableForSale
+                  selectedOptions {
+                    name
+                    value
+                  }
                 }
               }
             }
@@ -143,7 +257,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     seoMap[r.productId] = { applied: r.applied };
   }
 
-  return { products, seoMap, shop: session.shop };
+  const settings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+
+  let templateRules: TemplateRule[] = [];
+  try {
+    if (settings?.templateRules) templateRules = JSON.parse(settings.templateRules);
+  } catch { /* ignore */ }
+
+  return {
+    products,
+    seoMap,
+    shop: session.shop,
+    hasApiKey: !!(settings?.aiApiKey),
+    metaTitleTemplate: settings?.metaTitleTemplate ?? "",
+    metaDescTemplate: settings?.metaDescTemplate ?? "",
+    templateRules,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -163,12 +292,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       (p: ShopifyProduct) => productIds.has(p.id),
     );
 
-    const generated: GeneratedSeoItem[] = products.map((product) => ({
-      productId: product.id,
-      title: product.title,
-      metaTitle: generateMetaTitle(product),
-      metaDescription: generateMetaDescription(product),
-    }));
+    const settings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+    const globalTitleTemplate = settings?.metaTitleTemplate || DEFAULT_META_TITLE_TEMPLATE;
+    const globalDescTemplate = settings?.metaDescTemplate || DEFAULT_META_DESC_TEMPLATE;
+    const shopName = session.shop;
+
+    let templateRules: TemplateRule[] = [];
+    try {
+      if (settings?.templateRules) templateRules = JSON.parse(settings.templateRules);
+    } catch { /* ignore */ }
+
+    let decryptedKey: string | null = null;
+    if (settings?.aiApiKey) {
+      try { decryptedKey = decrypt(settings.aiApiKey); } catch { /* fall back to template */ }
+    }
+
+    const generated: GeneratedSeoItem[] = await Promise.all(
+      products.map(async (product) => {
+        if (decryptedKey) {
+          try {
+            const aiMeta = await generateProductMeta(
+              {
+                id: product.id,
+                title: product.title,
+                description: product.description,
+                productType: product.productType,
+                vendor: product.vendor,
+                tags: product.tags,
+                variants: product.variants,
+              },
+              "",
+              decryptedKey,
+              settings!.aiModel,
+            );
+            return { productId: product.id, title: product.title, ...aiMeta };
+          } catch { /* fall through to template on AI error */ }
+        }
+
+        const { titleTemplate, descTemplate } = selectTemplates(
+          product,
+          templateRules,
+          globalTitleTemplate,
+          globalDescTemplate,
+        );
+
+        return {
+          productId: product.id,
+          title: product.title,
+          metaTitle: generateMetaTitle(product, titleTemplate, shopName),
+          metaDescription: generateMetaDescription(product, descTemplate, shopName),
+        };
+      }),
+    );
 
     for (const item of generated) {
       await prisma.productSeoData.upsert({
@@ -257,6 +432,82 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
+// SERP preview
+// ---------------------------------------------------------------------------
+
+function SerpPreview({
+  title,
+  description,
+  url,
+}: {
+  title: string;
+  description: string;
+  url: string;
+}) {
+  return (
+    <div
+      style={{
+        fontFamily: "Arial, sans-serif",
+        padding: "12px 14px",
+        background: "#fff",
+        border: "1px solid #dfe1e5",
+        borderRadius: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+        <div
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            background: "#e8eaed",
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            fontSize: 12,
+            color: "#202124",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {url}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 18,
+          lineHeight: "1.3",
+          color: title ? "#1558d6" : "#9aa0a6",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          marginBottom: 3,
+          fontWeight: 400,
+        }}
+      >
+        {title || "Meta title will appear here"}
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          color: description ? "#4d5156" : "#9aa0a6",
+          lineHeight: "1.58",
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical" as const,
+          overflow: "hidden",
+        }}
+      >
+        {description || "Meta description will appear here."}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Indeterminate checkbox helper
 // ---------------------------------------------------------------------------
 
@@ -300,7 +551,8 @@ const CARD_STYLE: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 export default function MetaGenerator() {
-  const { products, seoMap } = useLoaderData<typeof loader>();
+  const { products, seoMap, hasApiKey, shop } = useLoaderData<typeof loader>();
+  const handleMap = Object.fromEntries(products.map((p) => [p.id, p.handle]));
   const fetcher = useFetcher<typeof action>();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -496,6 +748,12 @@ export default function MetaGenerator() {
                         {descLen}/155 chars{descLen > 155 ? " — too long" : " — ✓"}
                       </span>
                     </div>
+
+                    <SerpPreview
+                      title={item.metaTitle}
+                      description={item.metaDescription}
+                      url={`${shop}/products/${handleMap[item.productId] ?? ""}`}
+                    />
                   </s-stack>
                 </div>
               );
@@ -547,6 +805,28 @@ export default function MetaGenerator() {
           >
             {isGenerating ? "Generating…" : "Generate Meta Tags"}
           </s-button>
+
+          <span
+            style={{
+              fontSize: 12,
+              padding: "3px 10px",
+              borderRadius: 12,
+              background: hasApiKey ? "#e3f4f4" : "#f6f6f7",
+              color: hasApiKey ? "#0d4f4f" : "#6d7175",
+              fontWeight: 500,
+            }}
+          >
+            {hasApiKey ? "AI generation" : "Template generation"}
+          </span>
+
+          {!hasApiKey && (
+            <a
+              href="/app/settings"
+              style={{ fontSize: 12, color: "#2c6ecb", textDecoration: "underline" }}
+            >
+              Add API key to enable AI
+            </a>
+          )}
         </div>
 
         {/* Table */}

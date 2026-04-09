@@ -149,6 +149,58 @@ export function parseGeneratedContent(raw: string): GeneratedContent {
 }
 
 // ---------------------------------------------------------------------------
+// Product meta generation (title + description)
+// ---------------------------------------------------------------------------
+
+export async function generateProductMeta(
+  product: ProductForContent,
+  targetKeyword: string,
+  apiKey: string,
+  aiModel: string,
+): Promise<{ metaTitle: string; metaDescription: string }> {
+  const client = new Anthropic({ apiKey });
+  const productData = formatProduct(product);
+
+  const systemPrompt = `You are an expert ecommerce SEO specialist. Generate optimized meta tags for a product page.
+
+Return exactly two lines with no extra text:
+TITLE: <meta title, max 60 characters>
+DESC: <meta description, max 155 characters>
+
+Rules:
+- Title: include the product name and a key differentiator (brand, category, or feature). Must be under 60 chars.
+- Description: summarize the value proposition and include a call-to-action. Must be under 155 chars.
+- Be specific — use actual product names, brands, and features from the data provided.
+- Do not use quotes or markdown formatting.`;
+
+  const userPrompt = `Generate SEO meta tags for this product:
+
+${productData}${targetKeyword ? `\n\nTarget keyword: "${targetKeyword}"` : ""}`;
+
+  const message = await client.messages.create({
+    model: aiModel,
+    max_tokens: 200,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const firstBlock = message.content[0];
+  if (firstBlock.type !== "text") throw new Error("Unexpected response from Claude API.");
+
+  let metaTitle = "";
+  let metaDescription = "";
+  for (const line of firstBlock.text.split("\n")) {
+    if (line.startsWith("TITLE:")) metaTitle = line.slice(6).trim().slice(0, 60);
+    if (line.startsWith("DESC:")) metaDescription = line.slice(5).trim().slice(0, 155);
+  }
+
+  return {
+    metaTitle: metaTitle || stripHtml(product.description).slice(0, 60) || product.title.slice(0, 60),
+    metaDescription: metaDescription || stripHtml(product.description).slice(0, 155),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main generation function
 // ---------------------------------------------------------------------------
 

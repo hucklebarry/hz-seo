@@ -6,7 +6,8 @@ AI-powered SEO automation for Shopify stores. Auto-generates optimized meta titl
 ## Tech stack
 - **Framework:** React Router v7 (Shopify's official template), file-based routing via Vite
 - **Auth:** `@shopify/shopify-app-react-router` — `authenticate.admin(request)` in every loader/action
-- **Shopify API version:** `2026-01`
+- **Shopify Admin API version:** `ApiVersion.October25` (2025-10)
+- **Webhook API version:** `2026-04` (see `shopify.app.toml`)
 - **Database:** SQLite via Prisma (file: `prisma/dev.sqlite`)
 - **UI:** Polaris web components (`<s-page>`, `<s-card>`, `<s-text>`, `<s-button>`, etc.)
 
@@ -48,7 +49,7 @@ The `@shopify/polaris-types` definitions (v1.0.1) are incomplete — known misma
 
 ## Meta Generator (Phase 2) — what's built
 - **Loader:** fetches first 50 products via GraphQL, loads existing `ProductSeoData` from Prisma
-- **Generate action:** template-based meta title (≤60 chars) and description (≤155 chars), upserts `ProductSeoData` with `applied=false`
+- **Generate action:** AI meta generation when Anthropic API key is set; otherwise template-based (≤60 chars / ≤155 chars), upserts `ProductSeoData` with `applied=false`
 - **Apply action:** runs `productUpdate` mutation per product with 200ms delay, marks `applied=true` in Prisma
 - **UI:** checkbox table with status badges, inline-editable preview cards with live char counters, result banner
 - **Generation is deterministic/template-based** — AI generation (Claude API) is deferred to a later phase
@@ -74,6 +75,10 @@ The `@shopify/polaris-types` definitions (v1.0.1) are incomplete — known misma
   - Markdown→HTML conversion: custom line-by-line state machine (no library), supports H1-H3, bold/italic, code, lists
 - **Nav:** added Blog Generator link between Schema Markup and Settings
 - **Required env var:** `ENCRYPTION_KEY` — generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` and add to `.env`
+
+## Dashboard Bulk Operations (Phase 5-ish) — what's built
+- **Bulk Meta:** template-based generation + apply in batches of 10, tracked in `SeoJob`
+- **Bulk Schema:** JSON-LD generation + apply in batches of 10, tracked in `SeoJob`
 
 ## Dev setup
 **First time:**

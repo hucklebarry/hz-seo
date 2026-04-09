@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:sherpas.design)",
+      "WebFetch(domain:www.ilanadavis.com)",
+      "WebFetch(domain:www.boosterseo.com)",
+      "WebFetch(domain:analyzify.com)",
+      "WebFetch(domain:swankyagency.com)",
+      "WebFetch(domain:tiny-img.com)",
+      "WebFetch(domain:www.netprofitmarketing.com)",
+      "WebFetch(domain:gofishdigital.com)",
+      "WebFetch(domain:apps.shopify.com)",
+      "WebFetch(domain:help.boosterseo.com)",
+      "WebFetch(domain:chrisleverseo.com)",
+      "WebFetch(domain:meetanshi.com)",
+      "WebFetch(domain:www.shopify.com)",
+      "WebFetch(domain:bloggle.app)",
+      "WebFetch(domain:venntov.com)",
+      "WebFetch(domain:intercom.help)",
+      "WebFetch(domain:ecomexperts.io)",
+      "WebFetch(domain:smartseo.crisp.help)"
+    ]
+  }
+}

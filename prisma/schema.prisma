@@ -62,12 +62,15 @@ model ProductSeoData {
 }
 
 model AppSettings {
-  id        String   @id @default(cuid())
-  shop      String   @unique
-  aiApiKey  String?  // encrypted Anthropic API key
-  aiModel   String   @default("claude-sonnet-4-6")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String   @id @default(cuid())
+  shop              String   @unique
+  aiApiKey          String?  // encrypted Anthropic API key
+  aiModel           String   @default("claude-sonnet-4-6")
+  metaTitleTemplate String?  // token-based template e.g. "{title} - {type} | {vendor}"
+  metaDescTemplate  String?  // token-based description template
+  templateRules     String?  // JSON: [{productType, titleTemplate, descTemplate}]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 model GeneratedContent {
